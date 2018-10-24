@@ -1,0 +1,140 @@
+// Thanks to Michael Rush for the original version of this rule (https://software-development.dfstudio.com/youtracks-new-javascript-workflows-make-slack-integration-a-breeze-d3275605d565)
+
+// IMPORTANT: Use a valid Incoming Webhook from Slack. To get one, go to https://my.slack.com/services/new/incoming-webhook/
+var DISCORD_WEBHOOK_URL = 'YOUR_WEBHOOK_URL/slack';
+
+var entities = require('@jetbrains/youtrack-scripting-api/entities');
+var http = require('@jetbrains/youtrack-scripting-api/http');
+var workflow = require('@jetbrains/youtrack-scripting-api/workflow');
+
+exports.rule = entities.Issue.onChange({
+  title: workflow.i18n('Send notification to slack when an issue is reported, resolved, reopened or removed'),
+  guard: function(ctx) {
+    var issue = ctx.issue;
+    return issue.becomesReported || issue.becomesResolved || issue.becomesUnresolved || issue.becomesRemoved;
+  },
+  action: function(ctx) {
+    var issue = ctx.issue;
+
+    var issueLink = '<' + issue.url + "|" + issue.id + '>';
+    var message, isNew, isRemoved=false;
+
+    if (issue.becomesReported) {
+      message = "Created: ";
+      isNew = true;
+    } else if (issue.becomesResolved) {
+      message = "Resolved: ";
+      isNew = false;
+    } else if (issue.becomesUnresolved) {
+      message = "Reopened: ";
+      isNew = false;
+    } else if (issue.becomesRemoved){
+      message = "Removed: ";
+      isNew = false;
+      isRemoved=true;
+    } else {
+      message = issue.updatedBy.fullName + " has changed something on issue: ";
+    }
+    message += issue.summary;
+    
+    var changedByTitle = '',
+      changedByName = '';
+
+    if (isNew) {
+      changedByTitle = "Created By";
+      changedByName = issue.reporter.fullName;
+    } else if(!isRemoved){
+      changedByTitle = "Updated By";
+      changedByName = issue.updatedBy.fullName;
+    } else {
+      changedByTitle = "Removed By";
+      changedByName = issue.removedBy.fullName;
+    }
+    
+    var descriptionText = issue.description;
+    
+    var period;
+    
+    period = issue.fields.Estimation;
+    var timeEstimatedText = !period ? 0 : (period.getDays()===0?"":period.getDays()+"d ") +(period.getHours()===0?"":period.getHours()+"h " )+ (period.getMinutes()===0?"":period.getMinutes() + "m ");
+    
+    period = issue.fields.TimeSpent;
+    var timeSpentText = !period ? 0 : (period.getDays()===0?"":period.getDays()+"d ") +(period.getHours()===0?"":period.getHours()+"h " )+ (period.getMinutes()===0?"":period.getMinutes() + "m ");
+    
+    var assigneesText = "";
+    var assigneesInterator = issue.fields.Assignee.entries();
+    var assignee = assigneesInterator.next();
+    while (!assignee.done) {
+     	assigneesText += assignee.value.fullName+ ", ";
+      	assignee = assigneesInterator.next();
+  	}
+    assigneesText = assigneesText.substring(0,assigneesText.length-2);
+    
+    var workflowText = issue.fields.Workflow.name;
+    var priorityText = issue.fields.Priority.name;
+    var stateText = issue.fields.State.name;
+   
+    var payload = {
+      "attachments": [{
+        "fallback": message + " (" + issueLink + ")",
+        "pretext": message + " (" + issueLink + ")",
+        "color": issue.fields.Priority.backgroundColor || "#edb431",
+        "fields": [{
+          "title": "State",
+          "value": stateText,
+          "short": true
+        },
+          {
+            "title": "Priority",
+            "value": priorityText,
+            "short": true
+          },
+          {
+            "title": changedByTitle,
+            "value": changedByName,
+            "short": true
+          },
+          {
+         	"title": "Time estimated",
+        	"value": timeEstimatedText,
+            "short": true
+          }, 
+          {
+          	"title": "Time spent",
+          	"value": timeSpentText,
+            "short": true
+          },
+          {
+          	"title": "Workflow",
+          	"value": workflowText,
+            "short": true
+          },   
+          {
+            "title": "Assignees",
+            "value": assigneesText,
+            "short": false
+          },
+          {
+            "title": "Description",
+            "value": descriptionText===null?"no description":descriptionText,
+            "short": false
+          }
+        ]
+      }]
+    };
+
+    var conDiscord = new http.Connection(DISCORD_WEBHOOK_URL, null, 2000);
+    var respDiscord = conDiscord.postSync('', null, JSON.stringify(payload));
+    if (!respDiscord.isSuccess) {
+      console.warn('Failed to post notification to Discord. Details: ' + respDiscord.toString());
+    }
+  },
+  requirements: {
+    Priority: {
+      type: entities.EnumField.fieldType
+    },
+    State: {
+      type: entities.State.fieldType
+    }
+  }
+});
